@@ -12,7 +12,7 @@
 # in Open-Dispatch's environment.
 
 name: Open-Dispatch Sprite
-run-name: "OD-Sprite: ${{ inputs.agent_type }} — ${{ github.run_id }}"
+run-name: "OD-Sprite: ${{ inputs.agent_type }} [${{ inputs.dispatch_id }}]"
 
 on:
   workflow_dispatch:
@@ -29,6 +29,11 @@ on:
         options:
           - claude
           - opencode
+      dispatch_id:
+        description: 'Unique dispatch correlation ID (set by Open-Dispatch)'
+        required: false
+        default: ''
+        type: string
 
 jobs:
   agent:

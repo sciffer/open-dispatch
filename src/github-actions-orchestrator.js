@@ -41,10 +41,12 @@ class GithubActionsOrchestrator extends EventEmitter {
   }
 
   async spawnJob(job) {
+    const dispatchId = randomUUID();
     const dispatchTimestamp = Date.now();
     const inputs = {
       command: job.command || '',
-      agent_type: this.agentType
+      agent_type: this.agentType,
+      dispatch_id: dispatchId
     };
 
     try {
@@ -57,7 +59,7 @@ class GithubActionsOrchestrator extends EventEmitter {
 
     let runId;
     try {
-      runId = await this._findRunId(dispatchTimestamp);
+      runId = await this._findRunId(dispatchId, dispatchTimestamp);
     } catch (error) {
       job.fail(`Failed to find workflow run: ${error.message}`);
       this.emit('sprite:error', { job, error });
@@ -91,16 +93,20 @@ class GithubActionsOrchestrator extends EventEmitter {
     }
   }
 
-  async _findRunId(dispatchTimestamp, timeoutMs = 30000) {
+  async _findRunId(dispatchId, timeoutMs = 30000) {
+    const seenRunIds = new Set();
     const deadline = Date.now() + timeoutMs;
 
     while (Date.now() < deadline) {
       const runs = await this._listRuns();
-      const matching = runs
-        .filter(r => r.event === 'workflow_dispatch' && new Date(r.created_at).getTime() >= dispatchTimestamp)
-        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      for (const run of runs) {
+        if (run.event !== 'workflow_dispatch') continue;
+        if (seenRunIds.has(run.id)) continue;
+        seenRunIds.add(run.id);
 
-      if (matching.length > 0) return matching[0].id;
+        const title = run.display_title || '';
+        if (title.includes(dispatchId)) return run.id;
+      }
       await new Promise(r => setTimeout(r, 1000));
     }
 

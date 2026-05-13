@@ -116,11 +116,14 @@ describeOrSkip('GithubActionsOrchestrator', () => {
   describe('spawnJob', () => {
     it('should dispatch workflow and find run', async () => {
       const dispatched = [];
+      let currentDispatchId = null;
       let runFound = false;
 
       const mockFetch = async (url, options = {}) => {
         if (options.method === 'POST') {
-          dispatched.push({ url, body: JSON.parse(options.body) });
+          const body = JSON.parse(options.body);
+          dispatched.push({ url, body });
+          currentDispatchId = body.inputs && body.inputs.dispatch_id;
           return { ok: true, status: 204, text: async () => '', json: async () => ({}) };
         }
         if (url.includes('/actions/runs?event=workflow_dispatch')) {
@@ -133,6 +136,7 @@ describeOrSkip('GithubActionsOrchestrator', () => {
                 workflow_runs: [{
                   id: 42,
                   event: 'workflow_dispatch',
+                  display_title: `claude [${currentDispatchId}]`,
                   created_at: new Date().toISOString(),
                   status: 'queued'
                 }]
@@ -159,6 +163,7 @@ describeOrSkip('GithubActionsOrchestrator', () => {
       const result = await o.spawnJob(job);
 
       assert.ok(dispatched.length > 0, 'should have dispatched workflow');
+      assert.ok(dispatched[0].body.inputs.dispatch_id, 'should include dispatch_id in inputs');
       assert.ok(result.id, 'should return a run id');
       assert.strictEqual(job.status, JobStatus.RUNNING);
       assert.ok(job.machineId);
@@ -254,7 +259,9 @@ describeOrSkip('GithubActionsOrchestrator', () => {
   });
 
   describe('_findRunId', () => {
-    it('should find matching run after dispatch', async () => {
+    it('should find matching run by dispatch_id', async () => {
+      const dispatchId = 'test-dispatch-id-12345';
+
       const mockFetch = async (url) => ({
         ok: true, status: 200,
         text: async () => '',
@@ -262,7 +269,8 @@ describeOrSkip('GithubActionsOrchestrator', () => {
           workflow_runs: [{
             id: 100,
             event: 'workflow_dispatch',
-            created_at: new Date(Date.now() - 100).toISOString(),
+            display_title: `claude [${dispatchId}]`,
+            created_at: new Date().toISOString(),
             status: 'queued'
           }]
         })
@@ -273,7 +281,7 @@ describeOrSkip('GithubActionsOrchestrator', () => {
         tokenSecret: 'sec'
       });
 
-      const runId = await o._findRunId(Date.now() - 500, 5000);
+      const runId = await o._findRunId(dispatchId, 5000);
       assert.strictEqual(runId, 100);
     });
 
@@ -290,7 +298,33 @@ describeOrSkip('GithubActionsOrchestrator', () => {
       });
 
       await assert.rejects(
-        () => o._findRunId(Date.now(), 100),
+        () => o._findRunId('test-id', 100),
+        /Timed out/
+      );
+    });
+
+    it('should skip runs without matching dispatch_id', async () => {
+      const mockFetch = async (url) => ({
+        ok: true, status: 200,
+        text: async () => '',
+        json: async () => ({
+          workflow_runs: [{
+            id: 99,
+            event: 'workflow_dispatch',
+            display_title: 'claude [other-dispatch-id]',
+            created_at: new Date().toISOString(),
+            status: 'queued'
+          }]
+        })
+      });
+
+      const o = new GithubActionsOrchestrator({
+        token: 't', owner: 'o', repo: 'r', fetchFn: mockFetch,
+        tokenSecret: 'sec'
+      });
+
+      await assert.rejects(
+        () => o._findRunId('our-dispatch-id', 100),
         /Timed out/
       );
     });
