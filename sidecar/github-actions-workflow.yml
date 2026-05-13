@@ -1,0 +1,53 @@
+# Open-Dispatch Sprite — GitHub Actions Workflow
+#
+# Copy this file to your repo at .github/workflows/open-dispatch-sprite.yml
+# to enable running AI coding agents via GitHub Actions.
+#
+# Open-Dispatch triggers this workflow via workflow_dispatch API, passing the
+# agent command and agent type as inputs. The workflow checks out the repo,
+# installs the agent CLI, and executes the command. Output is retrieved via
+# the GitHub Actions API after the workflow completes.
+#
+# Required: a GitHub PAT with 'workflow' scope set as GITHUB_SPRITE_TOKEN
+# in Open-Dispatch's environment.
+
+name: Open-Dispatch Sprite
+run-name: "OD-Sprite: ${{ inputs.agent_type }} — ${{ github.run_id }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      command:
+        description: 'Agent command to execute'
+        required: true
+        type: string
+      agent_type:
+        description: 'Agent type: claude or opencode'
+        required: false
+        default: 'claude'
+        type: choice
+        options:
+          - claude
+          - opencode
+
+jobs:
+  agent:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Claude Code
+        if: inputs.agent_type == 'claude'
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Install OpenCode
+        if: inputs.agent_type == 'opencode'
+        run: npm install -g opencode-ai
+
+      - name: Execute agent
+        run: ${{ inputs.command }}

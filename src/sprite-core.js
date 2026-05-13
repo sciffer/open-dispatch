@@ -15,6 +15,7 @@
 const { randomUUID } = require('crypto');
 const { Job, JobStatus } = require('./job');
 const { SpriteOrchestrator } = require('./sprite-orchestrator');
+const { GithubActionsOrchestrator } = require('./github-actions-orchestrator');
 
 /**
  * Create an instance manager for Sprite-based agents.
@@ -23,19 +24,28 @@ const { SpriteOrchestrator } = require('./sprite-orchestrator');
  * @param {string} [options.appName] - Fly app name for Sprites
  * @param {string} [options.baseImage] - Default Docker image
  * @param {string} [options.agentType] - 'claude' or 'opencode'
- * @param {SpriteOrchestrator} [options.orchestrator] - For testing
+ * @param {string} [options.sandboxType] - 'fly' (default) or 'github'
+ * @param {SpriteOrchestrator|GithubActionsOrchestrator} [options.orchestrator] - For testing
  * @returns {Object} Instance manager
  */
 function createInstanceManager(options = {}) {
   const instances = new Map();
   const jobs = new Map();
   const agentType = options.agentType || process.env.SPRITE_AGENT_TYPE || 'claude';
+  const sandboxType = options.sandboxType || process.env.SPRITE_SANDBOX || 'fly';
 
-  const orchestrator = options.orchestrator || new SpriteOrchestrator({
-    apiToken: options.apiToken,
-    appName: options.appName,
-    baseImage: options.baseImage
-  });
+  const orchestrator = options.orchestrator || (sandboxType === 'github'
+    ? new GithubActionsOrchestrator({
+        agentType,
+        tokenSecret: options.tokenSecret,
+        fetchFn: options.fetchFn
+      })
+    : new SpriteOrchestrator({
+        apiToken: options.apiToken,
+        appName: options.appName,
+        baseImage: options.baseImage
+      })
+  );
 
   let staleReaperInterval = null;
 

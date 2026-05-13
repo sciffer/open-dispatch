@@ -1,6 +1,9 @@
 # Sprite Setup Guide
 
-This guide explains how to set up **Sprites** for running AI agents in isolated, ephemeral cloud VMs on [Fly.io](https://fly.io).
+This guide explains how to set up **Sprites** for running AI agents in isolated, ephemeral sandbox environments. Two sandbox types are supported:
+
+- **Fly.io** (default) — ephemeral Fly Machines with real-time output streaming
+- **GitHub Actions** — workflow runs on GitHub's infrastructure (one-shot jobs only)
 
 ## What is Open-Dispatch?
 
@@ -16,11 +19,11 @@ In Sprite mode, Open-Dispatch orchestrates Fly Machines and relays their output 
 
 ## What are Sprites?
 
-Sprites are ephemeral Fly Machines that:
+Sprites are ephemeral sandbox environments that:
 - Provide **isolated environments** per job (no state pollution between tasks)
-- Support **one-shot jobs** (spawn, run, terminate) and **persistent sessions** (wake on demand)
-- Stream agent output **back to chat in real-time** via HTTP webhooks
-- Run on [Fly.io Machines](https://fly.io/docs/machines/) with usage-based billing
+- Support **one-shot jobs** (spawn, run, terminate) and optionally **persistent sessions** (Fly sandbox only)
+- Stream agent output **back to chat in real-time** via HTTP webhooks (Fly sandbox) or batch via API polling (GitHub sandbox)
+- Run on [Fly.io Machines](https://fly.io/docs/machines/) (Fly sandbox) or [GitHub Actions](https://github.com/features/actions) (GitHub sandbox)
 
 ## Architecture Overview
 
@@ -385,10 +388,16 @@ Your agent image is responsible for uploading artifacts to external storage (S3,
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `CHAT_PROVIDER` | Yes | — | Chat platform: `slack`, `teams`, `discord` |
-| `FLY_API_TOKEN` | Yes | — | Fly.io API token |
-| `FLY_SPRITE_APP` | Yes | — | Fly app name for Sprite Machines |
-| `SPRITE_IMAGE` | Yes | — | Default Docker image for Sprites |
-| `OPEN_DISPATCH_URL` | No | `http://open-dispatch.internal:8080` | Webhook callback URL |
+| `FLY_API_TOKEN` | Fly only | — | Fly.io API token |
+| `FLY_SPRITE_APP` | Fly only | — | Fly app name for Sprite Machines |
+| `SPRITE_IMAGE` | Fly only | — | Default Docker image for Sprites |
+| `SPRITE_SANDBOX` | No | `fly` | Sandbox type: `fly` or `github` |
+| `GITHUB_SPRITE_TOKEN` | GH only | — | GitHub PAT with `workflow` scope |
+| `GITHUB_SPRITE_OWNER` | GH only | — | GitHub owner/org name |
+| `GITHUB_SPRITE_REPO` | GH only | — | GitHub repository name |
+| `GITHUB_SPRITE_WORKFLOW` | No | `.github/workflows/open-dispatch-sprite.yml` | Workflow file path (GH sandbox) |
+| `GITHUB_SPRITE_BRANCH` | No | `main` | Branch to run on (GH sandbox) |
+| `OPEN_DISPATCH_URL` | No | `http://open-dispatch.internal:8080` | Webhook callback URL (Fly sandbox) |
 | `WEBHOOK_PORT` | No | `8080` | Webhook server listen port |
 | `FLY_REGION` | No | `iad` | Preferred Fly.io region |
 | `SPRITE_AGENT_TYPE` | No | `claude` | Agent CLI: `claude` or `opencode` |
@@ -463,6 +472,107 @@ Set `FLY_API_TOKEN`, `FLY_SPRITE_APP`, `SPRITE_IMAGE`, and `CHAT_PROVIDER` in yo
 - Default timeout is 10 minutes
 - The stale job reaper runs every 60 seconds
 - Check if the agent command is hanging
+
+## GitHub Actions Sandbox
+
+As an alternative to Fly.io Machines, Open-Dispatch can run agents via **GitHub Actions workflows**. This is useful when you already have a GitHub Actions setup and prefer not to manage Fly.io infrastructure.
+
+### Key Differences from Fly Sandbox
+
+| Feature | Fly Sandbox | GitHub Sandbox |
+|---------|-------------|----------------|
+| **Infra required** | Fly.io account, app, API token | GitHub PAT with `workflow` scope |
+| **Output delivery** | Real-time via HTTP webhooks (Fly.io 6PN) | Batch via GH API polling after completion |
+| **Persistent sessions** | Supported | Not supported (one-shot only) |
+| **Sidecar needed** | Yes (Docker image with `sprite-reporter`) | No (workflow YAML runs directly on GH runner) |
+| **Output formatters** | Supported (in sidecar) | Not applicable |
+| **Billing** | Fly.io usage-based compute | GitHub Actions included minutes |
+
+### Prerequisites
+
+- A GitHub repository you can trigger workflows in
+- A GitHub personal access token (PAT) with **workflow** scope: `repo` + `workflow`
+- The workflow file installed in your repo (see below)
+
+### Step 1: Install the Workflow Template
+
+Copy the workflow template to your repository:
+
+```bash
+# From the open-dispatch repo:
+cp sidecar/github-actions-workflow.yml /path/to/your-repo/.github/workflows/open-dispatch-sprite.yml
+```
+
+The workflow accepts two inputs:
+- `command` — the agent command to execute (required)
+- `agent_type` — `claude` or `opencode` (default: `claude`)
+
+You can customize the workflow (e.g., add secrets, install additional tools, configure caching). The only requirement is that `inputs.command` is executed in a step.
+
+### Step 2: Configure Environment
+
+Add to your `.env`:
+
+```bash
+# Select the GitHub sandbox
+SPRITE_SANDBOX=github
+
+# GitHub credentials
+GITHUB_SPRITE_TOKEN=ghp_your-token-here
+GITHUB_SPRITE_OWNER=your-org-or-username
+GITHUB_SPRITE_REPO=your-repo-name
+
+# Optional: custom workflow file path (default: .github/workflows/open-dispatch-sprite.yml)
+# GITHUB_SPRITE_WORKFLOW=.github/workflows/open-dispatch-sprite.yml
+
+# Optional: branch to run on (default: main)
+# GITHUB_SPRITE_BRANCH=main
+```
+
+### Step 3: Start
+
+```bash
+npm run start:sprite
+```
+
+### How Output Delivery Works
+
+Unlike the Fly sandbox (which streams output in real-time via webhooks), the GitHub sandbox polls the GH API:
+
+1. Open-Dispatch triggers `workflow_dispatch` via the GH API (POST → 204)
+2. Polls the runs list every 1s up to 30s to discover the new run ID
+3. Polls run status every 5s until `status === "completed"`
+4. Fetches logs via `GET /actions/runs/{id}/logs` (zip), extracts via `unzip -p`
+5. Calls `job.onComplete()` with the collected logs, exit code, and conclusion
+
+This means output is delivered **in a batch after completion**, not line-by-line during execution. The user sees the full agent output at once when the workflow finishes.
+
+### Limitations
+
+- **One-shot jobs only** — persistent sessions (`/od-start --persistent`) are not supported
+- **No real-time streaming** — output is delivered after the workflow completes
+- **No artifact webhooks** — artifacts are not relayed (the `GithubActionsOrchestrator` doesn't expose artifact endpoints)
+- **No sidecar** — the workflow runs directly, so output formatting is minimal
+- **GitHub API rate limits** — 5,000 req/h for authenticated users; each job makes ~120 requests (polling 5s for 10 min), well within limits
+
+### Environment Variables Reference
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `SPRITE_SANDBOX` | Yes | — | Set to `github` to enable |
+| `GITHUB_SPRITE_TOKEN` | Yes | — | GitHub PAT with `workflow` scope |
+| `GITHUB_SPRITE_OWNER` | Yes | — | GitHub owner or organization |
+| `GITHUB_SPRITE_REPO` | Yes | — | GitHub repository name |
+| `GITHUB_SPRITE_WORKFLOW` | No | `.github/workflows/open-dispatch-sprite.yml` | Workflow file path |
+| `GITHUB_SPRITE_BRANCH` | No | `main` | Branch to run on |
+
+### Security Notes for GH Sandbox
+
+- The `GITHUB_SPRITE_TOKEN` needs `workflow` scope to dispatch workflows and read run status/logs
+- The token is used for all API calls: dispatch, polling, log fetching, and cancellation
+- Consider using a fine-grained PAT scoped to a single repo
+- The agent command runs as a workflow step — it can access any secrets configured on the repo
+- Workflow runs appear in the repo's Actions tab and are visible to users with repo access
 
 ## Security Notes
 
